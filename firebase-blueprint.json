@@ -106,6 +106,36 @@
           }
         }
       }
+    },
+    "friends": {
+      "description": "User friends and family connections",
+      "documents": {
+        "${friendshipId}": {
+          "userId": "string",
+          "friendId": "string",
+          "friendName": "string",
+          "friendEmail": "string",
+          "friendAvatar": "string",
+          "friendTitle": "string",
+          "friendLocation": "string",
+          "category": "string",
+          "createdAt": "timestamp"
+        }
+      }
+    },
+    "follows": {
+      "description": "User follow relationships",
+      "documents": {
+        "${followId}": {
+          "followerId": "string",
+          "followingId": "string",
+          "followingName": "string",
+          "followingAvatar": "string",
+          "followingTitle": "string",
+          "followingLocation": "string",
+          "createdAt": "timestamp"
+        }
+      }
     }
   }
 }

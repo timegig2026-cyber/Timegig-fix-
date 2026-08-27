@@ -10,10 +10,14 @@ service cloud.firestore {
       return request.auth.uid == userId;
     }
 
+    function isAdmin() {
+      return isSignedIn() && (request.auth.token.email == 'timegig2026@gmail.com' || request.auth.token.email == 'Timegig2026@gmail.com');
+    }
+
     // Users
     match /users/{userId} {
       allow read: if isSignedIn();
-      allow write: if isOwner(userId);
+      allow write: if isOwner(userId) || isAdmin();
     }
 
     // Posts
@@ -21,12 +25,12 @@ service cloud.firestore {
       allow read: if true;
       allow create: if isSignedIn();
       allow update: if isSignedIn();
-      allow delete: if isSignedIn() && (request.auth.uid == resource.data.authorId);
+      allow delete: if isSignedIn() && (request.auth.uid == resource.data.authorId || isAdmin());
       
       match /comments/{commentId} {
         allow read: if true;
         allow create: if isSignedIn();
-        allow delete: if isSignedIn() && (request.auth.uid == resource.data.userId || request.auth.uid == get(/databases/$(database)/documents/posts/$(postId)).data.authorId);
+        allow delete: if isSignedIn() && (request.auth.uid == resource.data.userId || request.auth.uid == get(/databases/$(database)/documents/posts/$(postId)).data.authorId || isAdmin());
       }
     }
 
@@ -35,25 +39,43 @@ service cloud.firestore {
       allow read: if true;
       allow create: if isSignedIn();
       allow update: if isSignedIn();
-      allow delete: if isSignedIn() && (request.auth.uid == resource.data.ownerId);
+      allow delete: if isSignedIn() && (request.auth.uid == resource.data.ownerId || isAdmin());
       
       match /comments/{commentId} {
         allow read: if true;
         allow create: if isSignedIn();
-        allow delete: if isSignedIn() && (request.auth.uid == resource.data.userId || request.auth.uid == get(/databases/$(database)/documents/listings/$(listingId)).data.ownerId);
+        allow delete: if isSignedIn() && (request.auth.uid == resource.data.userId || request.auth.uid == get(/databases/$(database)/documents/listings/$(listingId)).data.ownerId || isAdmin());
       }
     }
 
     // Conversations
     match /conversations/{conversationId} {
-      allow read: if isSignedIn() && (request.auth.uid in resource.data.participants);
+      allow read: if isSignedIn() && (request.auth.uid in resource.data.participants || isAdmin());
       allow create: if isSignedIn();
-      allow update: if isSignedIn() && (request.auth.uid in resource.data.participants);
+      allow update: if isSignedIn() && (request.auth.uid in resource.data.participants || isAdmin());
+      allow delete: if isSignedIn() && (request.auth.uid in resource.data.participants || isAdmin());
       
       match /messages/{messageId} {
-        allow read: if isSignedIn() && (request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants);
-        allow create: if isSignedIn() && (request.auth.uid == request.resource.data.senderId);
+        allow read: if isSignedIn() && (request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants || isAdmin());
+        allow create: if isSignedIn() && (request.auth.uid == request.resource.data.senderId || isAdmin());
+        allow update, delete: if isSignedIn() && (request.auth.uid == resource.data.senderId || isAdmin());
       }
+    }
+
+    // Friends & Family
+    match /friends/{friendshipId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && (request.auth.uid == request.resource.data.userId || isAdmin());
+      allow update: if isSignedIn() && (request.auth.uid == resource.data.userId || isAdmin());
+      allow delete: if isSignedIn() && (request.auth.uid == resource.data.userId || isAdmin());
+    }
+
+    // Follows
+    match /follows/{followId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && (request.auth.uid == request.resource.data.followerId || isAdmin());
+      allow update: if isSignedIn() && (request.auth.uid == resource.data.followerId || isAdmin());
+      allow delete: if isSignedIn() && (request.auth.uid == resource.data.followerId || isAdmin());
     }
   }
 }

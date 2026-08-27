@@ -7,7 +7,7 @@ import {
   Mic, Square, User, Eraser, ShieldAlert, UserMinus, Flag, Play, Pause, Check,
   ShieldCheck, CreditCard, Info, HelpCircle, LogOut, Settings, ChevronRight,
   Bell, Globe, TrendingUp, FileText, Users, Sparkles, PartyPopper, ArrowRight,
-  Lock, Mail, CheckCircle2, AlertCircle, FileCheck
+  Lock, Mail, CheckCircle2, AlertCircle, FileCheck, UserPlus, UserX, Heart
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import EmojiPicker, { Theme } from 'emoji-picker-react';
@@ -16,7 +16,10 @@ import {
   onAuthStateChanged, 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
+  sendPasswordResetEmail,
   signOut,
+  GoogleAuthProvider,
+  signInWithPopup,
   User as FirebaseUser
 } from 'firebase/auth';
 import { 
@@ -28,12 +31,61 @@ import {
   deleteDoc, 
   doc, 
   orderBy, 
+  where,
   serverTimestamp,
   setDoc,
   getDoc
 } from 'firebase/firestore';
+import { FriendsModal } from './components/FriendsModal';
+import { UserProfileModal } from './components/UserProfileModal';
+import { RelationshipChooserModal } from './components/RelationshipChooserModal';
+import { PrivacySettingsModal, PrivacySettings, DEFAULT_PRIVACY_SETTINGS } from './components/PrivacySettingsModal';
+import { ThemeSelectorModal } from './components/ThemeSelectorModal';
+import { LanguageSelectorModal } from './components/LanguageSelectorModal';
+import { AvatarUploadModal } from './components/AvatarUploadModal';
+import { WORLD_LANGUAGES, LanguageOption, getTranslation } from './i18n/languages';
+import { APP_THEMES, applyAppTheme } from './utils/themes';
+import { compressImageToDataUrl } from './utils/imageCompressor';
 
 type Tab = 'Home' | 'GiGs' | 'Seekers' | 'Chat' | 'Market';
+
+export type FriendItem = {
+  id: string;
+  userId: string;
+  friendId: string;
+  friendName: string;
+  friendEmail?: string;
+  friendAvatar: string;
+  friendTitle?: string;
+  friendLocation?: string;
+  category: 'Friend' | 'Family';
+  createdAt?: any;
+};
+
+export type FollowItem = {
+  id: string;
+  followerId: string;
+  followingId: string;
+  followingName: string;
+  followingAvatar: string;
+  followingTitle?: string;
+  followingLocation?: string;
+  createdAt?: any;
+};
+
+export type CommunityUser = {
+  id: string;
+  name: string;
+  email?: string;
+  avatar?: string;
+  title?: string;
+  location?: string;
+  province?: string;
+  bio?: string;
+  phone?: string;
+  whatsapp?: string;
+  profileCompleted?: boolean;
+};
 
 type MediaItem = {
   type: 'image' | 'video';
@@ -177,7 +229,9 @@ export default function App() {
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [isTermsModalOpen, setIsTermsModalOpen] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authInfoMessage, setAuthInfoMessage] = useState<string | null>(null);
   const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState<'congratulations' | 'complete_profile' | null>(null);
 
   // Profile completion form states
@@ -191,9 +245,44 @@ export default function App() {
   const [profileAvatar, setProfileAvatar] = useState('');
   const [isSavingProfile, setIsSavingProfile] = useState(false);
 
-  const currentUserProfile = userProfile || {
-    name: 'Loading...',
-    avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUser?.email || 'User')}&background=random`,
+  // Language, Theme & Privacy States
+  const [currentLanguage, setCurrentLanguage] = useState<string>(() => {
+    return localStorage.getItem('timegig_language') || 'en-za';
+  });
+  const [isLanguageModalOpen, setIsLanguageModalOpen] = useState(false);
+
+  const [currentTheme, setCurrentTheme] = useState<string>(() => {
+    return localStorage.getItem('timegig_theme') || 'light';
+  });
+  const [isThemeModalOpen, setIsThemeModalOpen] = useState(false);
+
+  const [privacySettings, setPrivacySettings] = useState<PrivacySettings>(DEFAULT_PRIVACY_SETTINGS);
+  const [isPrivacyModalOpen, setIsPrivacyModalOpen] = useState(false);
+
+  const [isAvatarUploadOpen, setIsAvatarUploadOpen] = useState(false);
+  const [avatarUploadTarget, setAvatarUploadTarget] = useState<'onboarding' | 'edit_profile'>('edit_profile');
+
+  // Translation helper
+  const t = (key: string, fallback?: string) => {
+    return getTranslation(currentLanguage, key, fallback);
+  };
+
+  // Social & Community States (Friends, Family, Follows)
+  const [friendsList, setFriendsList] = useState<FriendItem[]>([]);
+  const [followingList, setFollowingList] = useState<FollowItem[]>([]);
+  const [followersList, setFollowersList] = useState<FollowItem[]>([]);
+  const [allUsers, setAllUsers] = useState<CommunityUser[]>([]);
+  const [isFriendsModalOpen, setIsFriendsModalOpen] = useState(false);
+  const [friendsModalTab, setFriendsModalTab] = useState<'all' | 'friends' | 'family' | 'following' | 'followers' | 'find'>('all');
+  const [friendsSearchQuery, setFriendsSearchQuery] = useState('');
+  const [viewingUserModal, setViewingUserModal] = useState<CommunityUser | null>(null);
+  const [relationshipChooserUser, setRelationshipChooserUser] = useState<CommunityUser | null>(null);
+
+  const effectiveAvatar = profileAvatar || userProfile?.avatar || currentUser?.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(userProfile?.name || currentUser?.displayName || currentUser?.email?.split('@')[0] || 'User')}&background=000000&color=ffffff&size=200`;
+
+  const currentUserProfile = {
+    name: profileName || userProfile?.name || currentUser?.displayName || currentUser?.email?.split('@')[0] || 'User',
+    avatar: effectiveAvatar,
     email: currentUser?.email || ''
   };
   const NOTIFICATION_SOUNDS = [
@@ -310,6 +399,9 @@ export default function App() {
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [adminTab, setAdminTab] = useState<'Profit' | 'Agreements' | 'Agents' | 'Users' | 'Sellers'>('Profit');
+
+  const ADMIN_EMAIL = 'timegig2026@gmail.com';
+  const isAdminUser = Boolean(currentUser?.email && currentUser.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
@@ -409,6 +501,8 @@ export default function App() {
         ...prev,
         comments: commentsData
       }));
+    }, (error) => {
+      console.warn('Comments listener error:', error);
     });
 
     return () => unsubscribeComments();
@@ -425,7 +519,7 @@ export default function App() {
   }, [isVoiceRecording]);
 
   useEffect(() => {
-    if (!isAuthenticated || !activeConversationId) return;
+    if (!isAuthenticated || !currentUser?.uid || !activeConversationId) return;
 
     const messagesQuery = query(collection(db, 'conversations', activeConversationId, 'messages'), orderBy('timestamp', 'asc'));
     const unsubscribeMessages = onSnapshot(messagesQuery, (snapshot) => {
@@ -438,10 +532,12 @@ export default function App() {
       setConversations(prev => prev.map(conv => 
         conv.id === activeConversationId ? { ...conv, messages: messagesData } : conv
       ));
+    }, (error) => {
+      console.warn('Messages listener error:', error);
     });
 
     return () => unsubscribeMessages();
-  }, [isAuthenticated, activeConversationId]);
+  }, [isAuthenticated, currentUser?.uid, activeConversationId]);
 
   const isOnlyEmoji = (str: string) => {
     const emojiRegex = /^(\u00a9|\u00ae|[\u2000-\u3300]|\ud83c[\ud000-\udfff]|\ud83d[\ud000-\udfff]|\ud83e[\ud000-\udfff])+\s*$/;
@@ -564,6 +660,90 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 
+  // Theme & Language Synchronization
+  useEffect(() => {
+    applyAppTheme(currentTheme);
+    localStorage.setItem('timegig_theme', currentTheme);
+  }, [currentTheme]);
+
+  useEffect(() => {
+    localStorage.setItem('timegig_language', currentLanguage);
+    const langObj = WORLD_LANGUAGES.find(l => l.code.toLowerCase() === currentLanguage.toLowerCase());
+    document.documentElement.lang = currentLanguage;
+    document.documentElement.dir = langObj?.rtl ? 'rtl' : 'ltr';
+  }, [currentLanguage]);
+
+  const handleSavePrivacySettings = async (newSettings: PrivacySettings) => {
+    setPrivacySettings(newSettings);
+    if (currentUser?.uid) {
+      try {
+        await updateDoc(doc(db, 'users', currentUser.uid), {
+          privacySettings: newSettings,
+          updatedAt: serverTimestamp()
+        });
+        setUserProfile((prev: any) => ({ ...prev, privacySettings: newSettings }));
+      } catch (err) {
+        console.warn('Could not sync privacy settings to DB:', err);
+      }
+    }
+    addNotification('Privacy Updated', 'Your privacy & visibility settings were updated.', 'system');
+  };
+
+  const handleSelectTheme = async (themeId: string) => {
+    setCurrentTheme(themeId);
+    applyAppTheme(themeId);
+    if (currentUser?.uid) {
+      try {
+        await updateDoc(doc(db, 'users', currentUser.uid), {
+          theme: themeId,
+          updatedAt: serverTimestamp()
+        });
+        setUserProfile((prev: any) => ({ ...prev, theme: themeId }));
+      } catch (err) {
+        console.warn('Could not sync theme to DB:', err);
+      }
+    }
+    const themeName = APP_THEMES.find(t => t.id === themeId)?.name || themeId;
+    addNotification('Theme Applied', `Theme switched to ${themeName}.`, 'system');
+  };
+
+  const handleSelectLanguage = async (lang: LanguageOption) => {
+    setCurrentLanguage(lang.code);
+    if (currentUser?.uid) {
+      try {
+        await updateDoc(doc(db, 'users', currentUser.uid), {
+          language: lang.name,
+          languageCode: lang.code,
+          updatedAt: serverTimestamp()
+        });
+        setUserProfile((prev: any) => ({ ...prev, language: lang.name, languageCode: lang.code }));
+      } catch (err) {
+        console.warn('Could not sync language to DB:', err);
+      }
+    }
+    addNotification('Language Changed', `App language set to ${lang.nativeName} (${lang.name}).`, 'system');
+  };
+
+  const handleSaveAvatar = async (newAvatarUrl: string) => {
+    if (avatarUploadTarget === 'onboarding') {
+      setProfileAvatar(newAvatarUrl);
+    } else {
+      setProfileAvatar(newAvatarUrl);
+      if (currentUser?.uid) {
+        try {
+          await updateDoc(doc(db, 'users', currentUser.uid), {
+            avatar: newAvatarUrl,
+            updatedAt: serverTimestamp()
+          });
+          setUserProfile((prev: any) => ({ ...prev, avatar: newAvatarUrl }));
+        } catch (err) {
+          console.warn('Could not sync avatar to DB:', err);
+        }
+      }
+      addNotification('Profile Photo', 'Your profile picture has been updated.', 'system');
+    }
+  };
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
@@ -581,6 +761,19 @@ export default function App() {
           setProfileLocation(data.location || 'Cape Town');
           setProfileBio(data.bio || '');
           setProfileAvatar(data.avatar || '');
+          if (data.theme) {
+            setCurrentTheme(data.theme);
+          }
+          if (data.languageCode || data.language) {
+            const found = WORLD_LANGUAGES.find(l => 
+              l.code.toLowerCase() === (data.languageCode || '').toLowerCase() ||
+              l.name.toLowerCase() === (data.language || '').toLowerCase()
+            );
+            if (found) setCurrentLanguage(found.code);
+          }
+          if (data.privacySettings) {
+            setPrivacySettings({ ...DEFAULT_PRIVACY_SETTINGS, ...data.privacySettings });
+          }
         }
       } else {
         setUserProfile(null);
@@ -592,7 +785,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated || !currentUser?.uid) return;
 
     // Posts Sync
     const postsQuery = query(collection(db, 'posts'), orderBy('timestamp', 'desc'));
@@ -603,6 +796,8 @@ export default function App() {
         timestamp: doc.data().timestamp?.toDate() || new Date()
       })) as Post[];
       setPosts(postsData);
+    }, (err) => {
+      console.warn('Posts sync error:', err);
     });
 
     // Listings Sync
@@ -614,14 +809,19 @@ export default function App() {
         timestamp: doc.data().timestamp?.toDate() || new Date()
       })) as Listing[];
       setListings(listingsData);
+    }, (err) => {
+      console.warn('Listings sync error:', err);
     });
 
-    // Conversations Sync
-    const convQuery = query(collection(db, 'conversations'), orderBy('timestamp', 'desc'));
+    // Conversations Sync (Query only conversations where current user is a participant)
+    const convQuery = query(
+      collection(db, 'conversations'), 
+      where('participants', 'array-contains', currentUser.uid)
+    );
     const unsubscribeConv = onSnapshot(convQuery, (snapshot) => {
       const convData = snapshot.docs.map(docSnapshot => {
         const data = docSnapshot.data();
-        const otherId = data.participants?.find((p: string) => p !== currentUser?.uid) || 'system';
+        const otherId = data.participants?.find((p: string) => p !== currentUser.uid) || 'system';
         const details = data.participantDetails?.[otherId] || {};
         return {
           id: docSnapshot.id,
@@ -632,20 +832,249 @@ export default function App() {
           messages: [] // Messages fetched in separate effect
         };
       }) as Conversation[];
+      // In-memory sort by timestamp descending
+      convData.sort((a, b) => (b.timestamp?.getTime?.() || 0) - (a.timestamp?.getTime?.() || 0));
       setConversations(convData);
+    }, (err) => {
+      console.warn('Conversations sync error:', err);
+    });
+
+    // Friends & Family Sync
+    const friendsQuery = query(collection(db, 'friends'));
+    const unsubscribeFriends = onSnapshot(friendsQuery, (snapshot) => {
+      const fData = snapshot.docs.map(docSnapshot => ({
+        id: docSnapshot.id,
+        ...docSnapshot.data()
+      })) as FriendItem[];
+      setFriendsList(fData);
+    }, (err) => {
+      console.warn('Friends sync error:', err);
+    });
+
+    // Follows Sync
+    const followsQuery = query(collection(db, 'follows'));
+    const unsubscribeFollows = onSnapshot(followsQuery, (snapshot) => {
+      const fData = snapshot.docs.map(docSnapshot => ({
+        id: docSnapshot.id,
+        ...docSnapshot.data()
+      })) as FollowItem[];
+      setFollowingList(fData);
+      setFollowersList(fData);
+    }, (err) => {
+      console.warn('Follows sync error:', err);
+    });
+
+    // Registered Users Sync (Community Directory)
+    const usersQuery = query(collection(db, 'users'));
+    const unsubscribeUsers = onSnapshot(usersQuery, (snapshot) => {
+      const uData = snapshot.docs.map(docSnapshot => ({
+        id: docSnapshot.id,
+        ...docSnapshot.data()
+      })) as CommunityUser[];
+      setAllUsers(uData);
+    }, (err) => {
+      console.warn('Users sync error:', err);
     });
 
     return () => {
       unsubscribePosts();
       unsubscribeListings();
       unsubscribeConv();
+      unsubscribeFriends();
+      unsubscribeFollows();
+      unsubscribeUsers();
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, currentUser?.uid]);
+
+  // Social Helpers
+  const myFriends = friendsList.filter(f => f.userId === currentUser?.uid);
+  const myFriendsOnly = myFriends.filter(f => f.category === 'Friend');
+  const myFamilyOnly = myFriends.filter(f => f.category === 'Family');
+  const myFollowing = followingList.filter(f => f.followerId === currentUser?.uid);
+  const myFollowers = followersList.filter(f => f.followingId === currentUser?.uid);
+
+  const handleToggleFollow = async (targetUser: CommunityUser) => {
+    if (!currentUser || !targetUser.id || targetUser.id === currentUser.uid) return;
+    const followDocId = `${currentUser.uid}_${targetUser.id}`;
+    const isFollowing = followingList.some(f => f.followerId === currentUser.uid && f.followingId === targetUser.id);
+    try {
+      if (isFollowing) {
+        await deleteDoc(doc(db, 'follows', followDocId));
+      } else {
+        await setDoc(doc(db, 'follows', followDocId), {
+          followerId: currentUser.uid,
+          followingId: targetUser.id,
+          followingName: targetUser.name || 'Community Member',
+          followingAvatar: targetUser.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(targetUser.name || 'User')}&background=000000&color=ffffff`,
+          followingTitle: targetUser.title || '',
+          followingLocation: targetUser.location || '',
+          createdAt: serverTimestamp()
+        });
+        playSound(6, true);
+      }
+    } catch (e) {
+      console.error("Error toggling follow:", e);
+    }
+  };
+
+  const handleSetFriendship = async (targetUser: CommunityUser, category: 'Friend' | 'Family') => {
+    if (!currentUser || !targetUser.id || targetUser.id === currentUser.uid) return;
+    const friendDocId = `${currentUser.uid}_${targetUser.id}`;
+    try {
+      await setDoc(doc(db, 'friends', friendDocId), {
+        userId: currentUser.uid,
+        friendId: targetUser.id,
+        friendName: targetUser.name || 'Community Member',
+        friendEmail: targetUser.email || '',
+        friendAvatar: targetUser.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(targetUser.name || 'User')}&background=000000&color=ffffff`,
+        friendTitle: targetUser.title || '',
+        friendLocation: targetUser.location || '',
+        category,
+        createdAt: serverTimestamp()
+      });
+      setRelationshipChooserUser(null);
+      playSound(7, true);
+    } catch (e) {
+      console.error("Error setting friendship:", e);
+    }
+  };
+
+  const handleRemoveFriend = async (targetUserId: string) => {
+    if (!currentUser || !targetUserId) return;
+    const friendDocId = `${currentUser.uid}_${targetUserId}`;
+    try {
+      await deleteDoc(doc(db, 'friends', friendDocId));
+    } catch (e) {
+      console.error("Error removing friend:", e);
+    }
+  };
+
+  const startChatWithUser = async (targetUser: CommunityUser) => {
+    if (!currentUser || !targetUser.id || targetUser.id === currentUser.uid) return;
+    const existing = conversations.find(c => 
+      c.participants?.includes(currentUser.uid) && 
+      c.participants?.includes(targetUser.id)
+    );
+    if (existing) {
+      setActiveConversationId(existing.id);
+    } else {
+      const convData = {
+        participants: [currentUser.uid, targetUser.id],
+        participantDetails: {
+          [targetUser.id]: {
+            name: targetUser.name || 'Community Member',
+            avatar: targetUser.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(targetUser.name || 'User')}&background=000000&color=ffffff`
+          },
+          [currentUser.uid]: {
+            name: currentUserProfile.name,
+            avatar: currentUserProfile.avatar
+          }
+        },
+        lastMessage: 'Started conversation',
+        timestamp: serverTimestamp()
+      };
+      const docRef = await addDoc(collection(db, 'conversations'), convData);
+      await addDoc(collection(db, 'conversations', docRef.id, 'messages'), {
+        senderId: currentUser.uid,
+        sender: 'me',
+        text: `Hi ${targetUser.name || 'there'}! 👋`,
+        timestamp: serverTimestamp(),
+        type: 'text'
+      });
+      setActiveConversationId(docRef.id);
+    }
+    setIsProfileMenuOpen(false);
+    setIsFriendsModalOpen(false);
+    setViewingUserModal(null);
+    setActiveTab('Chat');
+  };
+
+  const handleGoogleAuth = async () => {
+    setAuthError(null);
+    setAuthInfoMessage(null);
+    setIsAuthSubmitting(true);
+    try {
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
+      const result = await signInWithPopup(auth, provider);
+      const user = result.user;
+      if (user) {
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        if (!userDoc.exists() || !userDoc.data()?.profileCompleted) {
+          const initialAvatar = user.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.displayName || user.email?.split('@')[0] || 'User')}&background=000000&color=ffffff&size=200`;
+          const profile = {
+            name: user.displayName || user.email?.split('@')[0] || 'User',
+            email: user.email || '',
+            avatar: initialAvatar,
+            title: '',
+            phone: user.phoneNumber || '',
+            whatsapp: user.phoneNumber || '',
+            province: 'Western Cape',
+            location: 'Cape Town',
+            bio: '',
+            profileCompleted: false,
+            termsAccepted: true,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          };
+          await setDoc(doc(db, 'users', user.uid), profile, { merge: true });
+          setUserProfile(profile);
+          setProfileName(profile.name);
+          setProfileAvatar(initialAvatar);
+          setProfileProvince('Western Cape');
+          setProfileLocation('Cape Town');
+          setProfileBio('');
+          setProfileTitle('');
+          setProfilePhone(profile.phone);
+          setProfileWhatsapp(profile.whatsapp);
+
+          setOnboardingStep('congratulations');
+          playSound(0, true);
+        } else {
+          setUserProfile(userDoc.data());
+        }
+      }
+    } catch (err: any) {
+      if (err.code !== 'auth/popup-closed-by-user' && err.code !== 'auth/cancelled-popup-request') {
+        setAuthError(err.message || 'Google sign-in failed. Please try again.');
+      }
+    } finally {
+      setIsAuthSubmitting(false);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail) {
+      setAuthError('Please enter your email address above to receive a password reset link.');
+      return;
+    }
+    setIsResettingPassword(true);
+    setAuthError(null);
+    setAuthInfoMessage(null);
+    try {
+      await sendPasswordResetEmail(auth, cleanEmail);
+      setAuthInfoMessage(`Password reset link sent to ${cleanEmail}. Please check your email inbox (and spam folder) to set a new password, then sign in!`);
+    } catch (err: any) {
+      if (err.code === 'auth/user-not-found') {
+        setAuthError('No account found with this email address. Please register a new account.');
+      } else if (err.code === 'auth/invalid-email') {
+        setAuthError('Please enter a valid email address.');
+      } else {
+        setAuthError(err.message || 'Failed to send password reset email.');
+      }
+    } finally {
+      setIsResettingPassword(false);
+    }
+  };
 
   const handleAuthAction = async () => {
     setAuthError(null);
+    setAuthInfoMessage(null);
 
-    if (!email.trim()) {
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (!cleanEmail) {
       setAuthError('Please enter your email address.');
       return;
     }
@@ -670,48 +1099,74 @@ export default function App() {
 
     try {
       if (authMode === 'signin') {
-        await signInWithEmailAndPassword(auth, email.trim(), password);
+        await signInWithEmailAndPassword(auth, cleanEmail, password);
         setAuthError(null);
       } else {
-        const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
-        const user = userCredential.user;
-        const initialAvatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(fullName.trim() || email.split('@')[0] || 'User')}&background=000000&color=ffffff&size=200`;
-        const profile = {
-          name: fullName.trim() || email.split('@')[0] || 'User',
-          email: user.email,
-          avatar: initialAvatar,
-          title: '',
-          phone: '',
-          whatsapp: '',
-          province: 'Western Cape',
-          location: 'Cape Town',
-          bio: '',
-          profileCompleted: false,
-          termsAccepted: true,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        };
-        await setDoc(doc(db, 'users', user.uid), profile);
-        setUserProfile(profile);
-        setProfileName(profile.name);
-        setProfileAvatar(initialAvatar);
-        setProfileProvince('Western Cape');
-        setProfileLocation('Cape Town');
-        setProfileBio('');
-        setProfileTitle('');
-        setProfilePhone('');
-        setProfileWhatsapp('');
-        
-        // Trigger Congratulation view as requested
-        setOnboardingStep('congratulations');
-        playSound(0, true);
+        let user;
+        try {
+          const userCredential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+          user = userCredential.user;
+        } catch (createErr: any) {
+          if (createErr.code === 'auth/email-already-in-use') {
+            // Attempt to sign in seamlessly with the password provided
+            try {
+              const signinCredential = await signInWithEmailAndPassword(auth, cleanEmail, password);
+              user = signinCredential.user;
+            } catch (signinErr: any) {
+              setAuthError('This email is already registered. If you already created this account, please sign in with your password or click below to reset your password.');
+              setIsAuthSubmitting(false);
+              return;
+            }
+          } else {
+            throw createErr;
+          }
+        }
+
+        if (user) {
+          // Check if profile exists
+          const userDoc = await getDoc(doc(db, 'users', user.uid));
+          if (!userDoc.exists() || !userDoc.data()?.profileCompleted) {
+            const initialAvatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(fullName.trim() || cleanEmail.split('@')[0] || 'User')}&background=000000&color=ffffff&size=200`;
+            const profile = {
+              name: fullName.trim() || cleanEmail.split('@')[0] || 'User',
+              email: user.email || cleanEmail,
+              avatar: initialAvatar,
+              title: '',
+              phone: '',
+              whatsapp: '',
+              province: 'Western Cape',
+              location: 'Cape Town',
+              bio: '',
+              profileCompleted: false,
+              termsAccepted: true,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp()
+            };
+            await setDoc(doc(db, 'users', user.uid), profile, { merge: true });
+            setUserProfile(profile);
+            setProfileName(profile.name);
+            setProfileAvatar(initialAvatar);
+            setProfileProvince('Western Cape');
+            setProfileLocation('Cape Town');
+            setProfileBio('');
+            setProfileTitle('');
+            setProfilePhone('');
+            setProfileWhatsapp('');
+            
+            // Trigger Congratulation view as requested
+            setOnboardingStep('congratulations');
+            playSound(0, true);
+          } else {
+            setUserProfile(userDoc.data());
+          }
+        }
       }
     } catch (error: any) {
       let message = error.message;
       if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
         message = 'Invalid email or password. Please check your credentials and try again.';
       } else if (error.code === 'auth/email-already-in-use') {
-        message = 'An account with this email already exists. Please sign in instead.';
+        message = 'An account with this email already exists. Please sign in instead or reset your password.';
       } else if (error.code === 'auth/weak-password') {
         message = 'Password is too weak. Please use at least 6 characters.';
       } else if (error.code === 'auth/invalid-email') {
@@ -763,11 +1218,11 @@ export default function App() {
   };
 
   const tabs: { id: Tab; icon: any; label: string }[] = [
-    { id: 'Home', icon: House, label: 'Home' },
-    { id: 'GiGs', icon: Layers, label: 'GiGs' },
-    { id: 'Seekers', icon: Compass, label: 'Seekers' },
-    { id: 'Chat', icon: MessageSquare, label: 'Chat' },
-    { id: 'Market', icon: Store, label: 'Market' },
+    { id: 'Home', icon: House, label: t('tab.home', 'Home') },
+    { id: 'GiGs', icon: Layers, label: t('tab.gigs', 'GiGs') },
+    { id: 'Seekers', icon: Compass, label: t('tab.seekers', 'Seekers') },
+    { id: 'Chat', icon: MessageSquare, label: t('tab.chat', 'Chat') },
+    { id: 'Market', icon: Store, label: t('tab.market', 'Market') },
   ];
 
   const handleShare = async () => {
@@ -1238,14 +1693,49 @@ export default function App() {
             </p>
           </div>
 
+          {authInfoMessage && (
+            <motion.div 
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="w-full mb-6 p-4 bg-emerald-50 border border-emerald-100 rounded-2xl flex items-start gap-3"
+            >
+              <CheckCircle2 size={18} className="text-emerald-600 flex-shrink-0 mt-0.5" />
+              <p className="text-[13px] font-bold text-emerald-700 leading-tight">{authInfoMessage}</p>
+            </motion.div>
+          )}
+
           {authError && (
             <motion.div 
               initial={{ opacity: 0, y: -8 }}
               animate={{ opacity: 1, y: 0 }}
-              className="w-full mb-6 p-4 bg-red-50 border border-red-100 rounded-2xl flex items-start gap-3"
+              className="w-full mb-6 p-4 bg-red-50 border border-red-100 rounded-2xl flex flex-col gap-2.5"
             >
-              <AlertCircle size={18} className="text-red-500 flex-shrink-0 mt-0.5" />
-              <p className="text-[13px] font-bold text-red-600 leading-tight">{authError}</p>
+              <div className="flex items-start gap-3">
+                <AlertCircle size={18} className="text-red-500 flex-shrink-0 mt-0.5" />
+                <p className="text-[13px] font-bold text-red-600 leading-tight">{authError}</p>
+              </div>
+              {(authError.toLowerCase().includes('already') || authError.toLowerCase().includes('exist')) && (
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode('signin');
+                      setAuthError(null);
+                    }}
+                    className="px-3 py-1.5 bg-black text-white text-[11px] font-bold uppercase tracking-wider rounded-xl hover:bg-black/80 transition-colors"
+                  >
+                    Switch to Sign In
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isResettingPassword}
+                    onClick={handleForgotPassword}
+                    className="px-3 py-1.5 bg-red-100 text-red-800 text-[11px] font-bold uppercase tracking-wider rounded-xl hover:bg-red-200 transition-colors disabled:opacity-50"
+                  >
+                    {isResettingPassword ? 'Sending...' : 'Reset Password'}
+                  </button>
+                </div>
+              )}
             </motion.div>
           )}
 
@@ -1264,6 +1754,9 @@ export default function App() {
                       setFullName(e.target.value);
                       if (authError) setAuthError(null);
                     }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleAuthAction();
+                    }}
                     className="w-full h-16 pl-14 pr-6 bg-black/[0.03] border-none rounded-3xl text-[15px] font-bold focus:ring-0 placeholder:text-black/25"
                   />
                 </div>
@@ -1281,6 +1774,9 @@ export default function App() {
                     setEmail(e.target.value);
                     if (authError) setAuthError(null);
                   }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleAuthAction();
+                  }}
                   className="w-full h-16 pl-14 pr-6 bg-black/[0.03] border-none rounded-3xl text-[15px] font-bold focus:ring-0 placeholder:text-black/25"
                 />
               </div>
@@ -1297,9 +1793,25 @@ export default function App() {
                     setPassword(e.target.value);
                     if (authError) setAuthError(null);
                   }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleAuthAction();
+                  }}
                   className="w-full h-16 pl-14 pr-6 bg-black/[0.03] border-none rounded-3xl text-[15px] font-bold focus:ring-0 placeholder:text-black/25"
                 />
               </div>
+
+              {authMode === 'signin' && (
+                <div className="flex justify-end px-2 pt-0.5">
+                  <button
+                    type="button"
+                    disabled={isResettingPassword}
+                    onClick={handleForgotPassword}
+                    className="text-[12px] font-bold text-black/40 hover:text-black transition-colors"
+                  >
+                    {isResettingPassword ? 'Sending reset link...' : 'Forgot password?'}
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Terms & Conditions Checkbox (Sign Up Mode) */}
@@ -1352,7 +1864,23 @@ export default function App() {
               )}
             </button>
 
-            <div className="flex items-center gap-4 py-3">
+            {/* Google Sign In / Sign Up Button */}
+            <button 
+              type="button"
+              onClick={handleGoogleAuth}
+              disabled={isAuthSubmitting}
+              className="w-full h-16 bg-white text-black border-2 border-black/10 hover:border-black/30 rounded-3xl font-bold text-[13px] active:scale-[0.98] transition-all shadow-sm flex items-center justify-center gap-3 disabled:opacity-50 hover:bg-black/[0.02]"
+            >
+              <svg className="w-5 h-5 flex-shrink-0" viewBox="0 0 24 24">
+                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+              </svg>
+              <span>{authMode === 'signin' ? 'Continue with Google' : 'Sign Up with Google'}</span>
+            </button>
+
+            <div className="flex items-center gap-4 py-1">
               <div className="flex-1 h-[1px] bg-black/5" />
               <span className="text-[10px] font-bold text-black/20 uppercase tracking-widest">or</span>
               <div className="flex-1 h-[1px] bg-black/5" />
@@ -1553,7 +2081,7 @@ export default function App() {
           <div className="max-w-md mx-auto space-y-8">
             {/* Avatar Selector Section */}
             <div className="flex flex-col items-center">
-              <div className="relative mb-4">
+              <div className="relative mb-3">
                 <img 
                   src={profileAvatar || currentUserProfile.avatar} 
                   alt="Avatar" 
@@ -1562,16 +2090,27 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    const seed = Math.random().toString(36).substring(7);
-                    setProfileAvatar(`https://api.dicebear.com/7.x/bottts/svg?seed=${seed}`);
+                    setAvatarUploadTarget('onboarding');
+                    setIsAvatarUploadOpen(true);
                   }}
                   className="absolute -bottom-2 -right-2 bg-black text-white p-2.5 rounded-2xl shadow-lg hover:scale-105 active:scale-95 transition-all"
-                  title="Randomize Avatar"
+                  title="Upload / Custom Avatar"
                 >
-                  <RefreshCw size={16} />
+                  <Camera size={16} />
                 </button>
               </div>
-              <p className="text-[12px] font-bold text-black/40">Tap icon to change avatar avatar style</p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAvatarUploadTarget('onboarding');
+                    setIsAvatarUploadOpen(true);
+                  }}
+                  className="text-[12px] font-bold text-black underline underline-offset-4 hover:opacity-75"
+                >
+                  Upload Profile Photo
+                </button>
+              </div>
             </div>
 
             {/* Profile Form */}
@@ -1702,19 +2241,35 @@ export default function App() {
   return (
     <div className="min-h-screen bg-white flex flex-col font-sans selection:bg-black selection:text-white">
       {/* Top Bar */}
-      <header className="fixed top-0 left-0 right-0 h-16 flex items-center px-6 bg-white z-40 border-b border-gray-50">
+      <header className="fixed top-0 left-0 right-0 h-16 flex items-center px-4 sm:px-6 bg-white z-40 border-b border-gray-50">
         <div className="flex-1 flex items-center justify-between">
-          {activeTab === 'Home' ? (
-            <div className="w-10" />
-          ) : (
-            <div className="w-10" />
-          )}
+          <button 
+            type="button"
+            onClick={() => setIsProfileMenuOpen(true)}
+            className="flex items-center gap-2.5 group active:scale-95 transition-all text-left outline-none"
+            title="TimeGiG - Open Profile & Settings"
+          >
+            <div className="relative w-9 h-9 rounded-2xl bg-black overflow-hidden shadow-sm border border-black/10 flex items-center justify-center group-hover:ring-2 group-hover:ring-black/15 transition-all">
+              <img 
+                src={currentUserProfile.avatar} 
+                alt="TimeGiG Profile Logo" 
+                className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+              />
+              <span className="absolute bottom-0 right-0 px-1 py-0.5 bg-black/85 text-white text-[7.5px] font-black tracking-tighter rounded-tl-sm backdrop-blur-xs leading-none">
+                TG
+              </span>
+            </div>
+            <div className="hidden xs:flex flex-col">
+              <span className="text-[13px] font-black tracking-tight leading-none text-black">TimeGiG</span>
+              <span className="text-[8.5px] font-bold text-black/40 uppercase tracking-widest leading-none mt-0.5">South Africa</span>
+            </div>
+          </button>
 
           <h1 className="text-[14px] font-bold tracking-[0.2em] uppercase text-black">
-            {activeTab === 'Chat' ? 'Messages' : activeTab}
+            {activeTab === 'Chat' ? t('tab.chat', 'Messages') : t(`tab.${activeTab.toLowerCase()}`, activeTab)}
           </h1>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3 sm:gap-4">
             <button 
               onClick={() => setIsNotificationsOpen(true)}
               className="relative p-1 text-black active:scale-90 transition-transform outline-none"
@@ -1735,7 +2290,7 @@ export default function App() {
             <img 
               src={currentUserProfile.avatar} 
               alt="Profile" 
-              className="w-8 h-8 rounded-full object-cover border border-black/5 cursor-pointer hover:ring-2 hover:ring-black/5 transition-all" 
+              className="w-8 h-8 rounded-full object-cover border border-black/5 cursor-pointer hover:ring-2 hover:ring-black/10 transition-all active:scale-95 shadow-xs" 
               onClick={() => setIsProfileMenuOpen(true)}
             />
           </div>
@@ -2082,29 +2637,46 @@ export default function App() {
                     >
                       {/* Post Header */}
                       <div className="flex items-center justify-between mb-4">
-                        <div className="flex items-center gap-3">
-                          <img src={currentUserProfile.avatar} className="w-10 h-10 rounded-full object-cover" />
+                        <div 
+                          onClick={() => {
+                            const authorUser = allUsers.find(u => u.id === post.authorId) || {
+                              id: post.authorId || '',
+                              name: post.authorName || 'Community Member',
+                              avatar: post.authorAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(post.authorName || 'User')}&background=000000&color=ffffff`
+                            };
+                            setViewingUserModal(authorUser);
+                          }}
+                          className="flex items-center gap-3 cursor-pointer group"
+                        >
+                          <img 
+                            src={post.authorAvatar || currentUserProfile.avatar} 
+                            className="w-10 h-10 rounded-full object-cover group-hover:scale-105 transition-transform" 
+                          />
                           <div>
-                            <p className="text-[14px] font-bold text-black">{currentUserProfile.name}</p>
+                            <p className="text-[14px] font-bold text-black group-hover:underline underline-offset-2">
+                              {post.authorName || currentUserProfile.name}
+                            </p>
                             <p className="text-[11px] font-bold text-black/20 uppercase tracking-widest">
                               {post.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                             </p>
                           </div>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <button 
-                            onClick={() => setEditingPost(post)}
-                            className="p-2 hover:bg-black/5 rounded-full transition-colors text-black/40"
-                          >
-                            <Edit3 size={18} />
-                          </button>
-                          <button 
-                            onClick={() => handleDeletePost(post.id)}
-                            className="p-2 hover:bg-black/5 rounded-full transition-colors text-black/40"
-                          >
-                            <Trash2 size={18} />
-                          </button>
-                        </div>
+                        {(post.authorId === currentUser?.uid || isAdminUser) && (
+                          <div className="flex items-center gap-2">
+                            <button 
+                              onClick={() => setEditingPost(post)}
+                              className="p-2 hover:bg-black/5 rounded-full transition-colors text-black/40"
+                            >
+                              <Edit3 size={18} />
+                            </button>
+                            <button 
+                              onClick={() => handleDeletePost(post.id)}
+                              className="p-2 hover:bg-black/5 rounded-full transition-colors text-black/40"
+                            >
+                              <Trash2 size={18} />
+                            </button>
+                          </div>
+                        )}
                       </div>
 
                       {post.text && (
@@ -3157,6 +3729,54 @@ export default function App() {
                 </p>
               </div>
 
+              {/* Creator Profile Section */}
+              {(() => {
+                const creator = allUsers.find(u => u.id === selectedListing.ownerId || u.email === selectedListing.ownerEmail) || {
+                  id: selectedListing.ownerId || '',
+                  name: selectedListing.ownerEmail ? selectedListing.ownerEmail.split('@')[0] : 'Community Member',
+                  email: selectedListing.ownerEmail,
+                  avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(selectedListing.ownerEmail || 'User')}&background=000000&color=ffffff`,
+                  location: selectedListing.location,
+                  province: selectedListing.province
+                };
+                const friendship = friendsList.find(f => f.userId === currentUser?.uid && (f.friendId === creator.id || f.friendEmail === creator.email));
+                const isFollowing = followingList.some(f => f.followerId === currentUser?.uid && f.followingId === creator.id);
+
+                return (
+                  <div className="p-4 bg-black/[0.02] rounded-3xl border border-black/[0.03] mb-8">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-[11px] font-bold uppercase tracking-widest text-black/30">Posted by</span>
+                      {friendship && (
+                        <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider ${
+                          friendship.category === 'Family' ? 'bg-rose-100 text-rose-700' : 'bg-blue-100 text-blue-700'
+                        }`}>
+                          {friendship.category}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3.5">
+                      <img 
+                        src={creator.avatar} 
+                        className="w-12 h-12 rounded-2xl object-cover border border-black/5"
+                        alt=""
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[15px] font-bold text-black truncate">{creator.name}</p>
+                        <p className="text-[12px] font-medium text-black/40 truncate">
+                          {creator.location ? `${creator.location}, ${creator.province || ''}` : 'TimeGiG Member'}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => setViewingUserModal(creator)}
+                        className="px-3.5 py-2 bg-white hover:bg-black hover:text-white text-black text-[11px] font-bold uppercase tracking-wider rounded-2xl border border-black/5 shadow-sm transition-all active:scale-95"
+                      >
+                        View Profile
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
+
               <div className="space-y-4 pt-8 border-t border-black/5 pb-10">
                 <button 
                   onClick={() => { 
@@ -3194,36 +3814,148 @@ export default function App() {
 
       {/* Bottom Menu Bar */}
       {!(activeTab === 'Chat' && activeConversationId) && (
-        <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 px-6 py-2 pb-6 z-50">
+        <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 px-4 sm:px-6 py-2 pb-6 z-50">
           <div className="max-w-md mx-auto flex justify-between items-center relative">
-            {tabs.map((tab) => {
-              const totalMessages = conversations.reduce((acc, conv) => acc + conv.messages.length, 0);
-              
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => {
-                    setActiveTab(tab.id);
-                    setSelectedMessageId(null);
-                  }}
-                  className="relative p-2 rounded-xl flex items-center justify-center transition-all duration-300 group outline-none"
-                >
-                  <tab.icon
-                    size={20}
-                    className="relative z-10 text-black"
-                    strokeWidth={activeTab === tab.id ? 2.5 : 2}
-                  />
-                  
-                  {activeTab === tab.id && (
-                    <motion.div
-                      layoutId="active-indicator"
-                      className="absolute -bottom-1 w-1 h-1 bg-black rounded-full"
-                      transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-                    />
-                  )}
-                </button>
-              );
-            })}
+            <button
+              onClick={() => {
+                setActiveTab('Home');
+                setSelectedMessageId(null);
+              }}
+              className="relative p-2 rounded-xl flex items-center justify-center transition-all duration-300 group outline-none active:scale-90"
+              title="Home"
+            >
+              <House
+                size={20}
+                className="relative z-10 text-black"
+                strokeWidth={activeTab === 'Home' && !isFriendsModalOpen ? 2.5 : 2}
+              />
+              {activeTab === 'Home' && !isFriendsModalOpen && (
+                <motion.div
+                  layoutId="active-indicator"
+                  className="absolute -bottom-1 w-1 h-1 bg-black rounded-full"
+                  transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                />
+              )}
+            </button>
+
+            <button
+              onClick={() => {
+                setActiveTab('GiGs');
+                setSelectedMessageId(null);
+              }}
+              className="relative p-2 rounded-xl flex items-center justify-center transition-all duration-300 group outline-none active:scale-90"
+              title="GiGs"
+            >
+              <Layers
+                size={20}
+                className="relative z-10 text-black"
+                strokeWidth={activeTab === 'GiGs' && !isFriendsModalOpen ? 2.5 : 2}
+              />
+              {activeTab === 'GiGs' && !isFriendsModalOpen && (
+                <motion.div
+                  layoutId="active-indicator"
+                  className="absolute -bottom-1 w-1 h-1 bg-black rounded-full"
+                  transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                />
+              )}
+            </button>
+
+            <button
+              onClick={() => {
+                setActiveTab('Seekers');
+                setSelectedMessageId(null);
+              }}
+              className="relative p-2 rounded-xl flex items-center justify-center transition-all duration-300 group outline-none active:scale-90"
+              title="Seekers"
+            >
+              <Compass
+                size={20}
+                className="relative z-10 text-black"
+                strokeWidth={activeTab === 'Seekers' && !isFriendsModalOpen ? 2.5 : 2}
+              />
+              {activeTab === 'Seekers' && !isFriendsModalOpen && (
+                <motion.div
+                  layoutId="active-indicator"
+                  className="absolute -bottom-1 w-1 h-1 bg-black rounded-full"
+                  transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                />
+              )}
+            </button>
+
+            {/* Friends Feature Icon */}
+            <button
+              onClick={() => {
+                setFriendsModalTab('all');
+                setIsFriendsModalOpen(true);
+              }}
+              className="relative p-2 rounded-xl flex items-center justify-center transition-all duration-300 group outline-none active:scale-90"
+              title="Friends & Family"
+            >
+              <Users
+                size={20}
+                className="relative z-10 text-black"
+                strokeWidth={isFriendsModalOpen ? 2.5 : 2}
+              />
+              {myFriends.length > 0 && (
+                <span className="absolute 0.5 -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-1 bg-black text-white text-[9px] font-bold rounded-full flex items-center justify-center z-20">
+                  {myFriends.length}
+                </span>
+              )}
+              {isFriendsModalOpen && (
+                <motion.div
+                  layoutId="active-indicator"
+                  className="absolute -bottom-1 w-1 h-1 bg-black rounded-full"
+                  transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                />
+              )}
+            </button>
+
+            <button
+              onClick={() => {
+                setActiveTab('Chat');
+                setSelectedMessageId(null);
+              }}
+              className="relative p-2 rounded-xl flex items-center justify-center transition-all duration-300 group outline-none active:scale-90"
+              title="Chat"
+            >
+              <MessageSquare
+                size={20}
+                className="relative z-10 text-black"
+                strokeWidth={activeTab === 'Chat' && !isFriendsModalOpen ? 2.5 : 2}
+              />
+              {conversations.some(c => c.unreadCount > 0) && (
+                <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full z-20" />
+              )}
+              {activeTab === 'Chat' && !isFriendsModalOpen && (
+                <motion.div
+                  layoutId="active-indicator"
+                  className="absolute -bottom-1 w-1 h-1 bg-black rounded-full"
+                  transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                />
+              )}
+            </button>
+
+            <button
+              onClick={() => {
+                setActiveTab('Market');
+                setSelectedMessageId(null);
+              }}
+              className="relative p-2 rounded-xl flex items-center justify-center transition-all duration-300 group outline-none active:scale-90"
+              title="Market"
+            >
+              <Store
+                size={20}
+                className="relative z-10 text-black"
+                strokeWidth={activeTab === 'Market' && !isFriendsModalOpen ? 2.5 : 2}
+              />
+              {activeTab === 'Market' && !isFriendsModalOpen && (
+                <motion.div
+                  layoutId="active-indicator"
+                  className="absolute -bottom-1 w-1 h-1 bg-black rounded-full"
+                  transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                />
+              )}
+            </button>
           </div>
         </nav>
       )}
@@ -3488,32 +4220,84 @@ export default function App() {
               <button onClick={() => setIsProfileMenuOpen(false)} className="p-2 -ml-2 hover:bg-black/5 rounded-full transition-colors">
                 <ChevronLeft size={24} />
               </button>
-              <h2 className="flex-1 text-center text-[14px] font-bold tracking-[0.2em] uppercase mr-8">Profile</h2>
+              <h2 className="flex-1 text-center text-[14px] font-bold tracking-[0.2em] uppercase mr-8">{t('profile.title', 'Profile')}</h2>
             </header>
 
             <div className="flex-1 overflow-y-auto px-6 py-8">
               {/* User Identity Section */}
-              <div className="flex flex-col items-center mb-10">
+              <div className="flex flex-col items-center mb-6">
                 <div className="relative mb-4">
-                  <img src={currentUserProfile.avatar} className="w-24 h-24 rounded-[32px] object-cover shadow-xl border-4 border-white" />
-                  <div className="absolute -bottom-2 -right-2 bg-black text-white p-2 rounded-xl shadow-lg">
-                    <Edit3 size={16} />
-                  </div>
+                  <img src={currentUserProfile.avatar} className="w-24 h-24 rounded-[32px] object-cover shadow-xl border-4 border-white" alt="Avatar" />
                 </div>
                 <h3 className="text-[20px] font-bold text-black mb-1">{currentUserProfile.name}</h3>
-                <p className="text-[12px] font-bold text-black/20 uppercase tracking-widest">Premium Member</p>
+                {isAdminUser ? (
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-black text-white rounded-full">
+                    <ShieldCheck size={12} className="text-emerald-400" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest">Platform Admin</span>
+                  </div>
+                ) : (
+                  <p className="text-[12px] font-bold text-black/20 uppercase tracking-widest">Premium Member</p>
+                )}
+              </div>
+
+              {/* Social Stats Strip */}
+              <div className="grid grid-cols-3 gap-2.5 max-w-sm mx-auto w-full mb-8">
+                <button 
+                  onClick={() => {
+                    setFriendsModalTab('all');
+                    setIsFriendsModalOpen(true);
+                  }}
+                  className="flex flex-col items-center justify-center p-3.5 bg-black/[0.02] hover:bg-black/[0.05] rounded-2xl border border-black/[0.03] transition-all group active:scale-95"
+                >
+                  <span className="text-[18px] font-black text-black group-hover:scale-105 transition-transform">{myFriends.length}</span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-black/40">{t('profile.friends_family', 'Friends & Family')}</span>
+                </button>
+                <button 
+                  onClick={() => {
+                    setFriendsModalTab('following');
+                    setIsFriendsModalOpen(true);
+                  }}
+                  className="flex flex-col items-center justify-center p-3.5 bg-black/[0.02] hover:bg-black/[0.05] rounded-2xl border border-black/[0.03] transition-all group active:scale-95"
+                >
+                  <span className="text-[18px] font-black text-black group-hover:scale-105 transition-transform">{myFollowing.length}</span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-black/40">Following</span>
+                </button>
+                <button 
+                  onClick={() => {
+                    setFriendsModalTab('followers');
+                    setIsFriendsModalOpen(true);
+                  }}
+                  className="flex flex-col items-center justify-center p-3.5 bg-black/[0.02] hover:bg-black/[0.05] rounded-2xl border border-black/[0.03] transition-all group active:scale-95"
+                >
+                  <span className="text-[18px] font-black text-black group-hover:scale-105 transition-transform">{myFollowers.length}</span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-black/40">Followers</span>
+                </button>
               </div>
 
               {/* Menu Actions */}
               <div className="space-y-2 max-w-sm mx-auto w-full">
                 {[
-                  { label: 'Edit profile', icon: User, onClick: () => setIsEditingProfile(true) },
-                  { label: 'Admin', icon: ShieldCheck, onClick: () => setIsAdminOpen(true) },
+                  { 
+                    label: t('profile.friends_family', 'Friends & Family'), 
+                    icon: Users, 
+                    onClick: () => {
+                      setFriendsModalTab('all');
+                      setIsFriendsModalOpen(true);
+                    },
+                    badge: `${myFriends.length}`
+                  },
+                  { label: t('profile.edit_profile', 'Edit Profile'), icon: User, onClick: () => setIsEditingProfile(true) },
+                  ...(isAdminUser ? [{ 
+                    label: 'Admin Dashboard', 
+                    icon: ShieldCheck, 
+                    onClick: () => setIsAdminOpen(true),
+                    badge: 'Admin'
+                  }] : []),
                   { label: 'Subscription', icon: CreditCard, onClick: () => setIsSubscriptionOpen(true) },
-                  { label: 'Settings', icon: Settings, onClick: () => setIsSettingsOpen(true) },
+                  { label: t('profile.settings', 'Settings'), icon: Settings, onClick: () => setIsSettingsOpen(true) },
                   { label: 'About', icon: Info, onClick: () => setIsAboutOpen(true) },
                   { label: 'Help', icon: HelpCircle, onClick: () => setIsHelpOpen(true) },
-                ].map((item) => (
+                ].map((item: any) => (
                   <button 
                     key={item.label}
                     onClick={item.onClick}
@@ -3521,11 +4305,17 @@ export default function App() {
                   >
                     <div className="flex items-center gap-4">
                       <div className="w-10 h-10 bg-white rounded-2xl flex items-center justify-center shadow-sm group-hover:scale-110 transition-transform">
-                        <item.icon size={20} className="text-black" />
+                        <item.icon size={20} className={item.badge ? 'text-black font-bold' : 'text-black'} />
                       </div>
                       <span className="text-[15px] font-bold text-black">{item.label}</span>
                     </div>
-                    <ChevronRight size={18} className="text-black/10 group-hover:text-black/40 transition-colors" />
+                    {item.badge ? (
+                      <span className="px-3 py-1 bg-black text-white text-[10px] font-bold uppercase tracking-widest rounded-full shadow-sm">
+                        {item.badge}
+                      </span>
+                    ) : (
+                      <ChevronRight size={18} className="text-black/10 group-hover:text-black/40 transition-colors" />
+                    )}
                   </button>
                 ))}
               </div>
@@ -3539,7 +4329,7 @@ export default function App() {
                   <div className="w-10 h-10 bg-red-50 rounded-2xl flex items-center justify-center">
                     <LogOut size={20} />
                   </div>
-                  <span className="text-[15px]">Logout</span>
+                  <span className="text-[15px]">{t('profile.logout', 'Logout')}</span>
                 </button>
               </div>
             </div>
@@ -3549,7 +4339,7 @@ export default function App() {
 
       {/* Admin Panel Overlay */}
       <AnimatePresence>
-        {isAdminOpen && (
+        {isAdminOpen && isAdminUser && (
           <motion.div
             initial={{ y: '100%' }}
             animate={{ y: 0 }}
@@ -3784,24 +4574,44 @@ export default function App() {
               <button onClick={() => setIsEditingProfile(false)} className="p-2 -ml-2 hover:bg-black/5 rounded-full transition-colors">
                 <ChevronLeft size={24} />
               </button>
-              <h2 className="flex-1 text-center text-[14px] font-bold tracking-[0.2em] uppercase mr-8">Edit Profile</h2>
+              <h2 className="flex-1 text-center text-[14px] font-bold tracking-[0.2em] uppercase mr-8">{t('profile.edit_profile', 'Edit Profile')}</h2>
             </header>
 
             <div className="flex-1 overflow-y-auto px-6 py-8">
               <div className="max-w-sm mx-auto bg-white rounded-[40px] shadow-2xl overflow-hidden border border-black/5">
                 <div className="relative h-48 bg-black/[0.03]">
-                  <img src={currentUserProfile.avatar} className="w-full h-full object-cover" alt="" />
+                  <img src={profileAvatar || currentUserProfile.avatar} className="w-full h-full object-cover" alt="" />
                   <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
                   <div className="absolute top-4 right-4 flex gap-2">
-                    <button className="w-10 h-10 bg-black/20 backdrop-blur-md rounded-full flex items-center justify-center text-white hover:bg-black/40 transition-colors">
+                    <button 
+                      type="button"
+                      onClick={() => {
+                        setAvatarUploadTarget('edit_profile');
+                        setIsAvatarUploadOpen(true);
+                      }}
+                      className="w-10 h-10 bg-black/40 backdrop-blur-md rounded-full flex items-center justify-center text-white hover:bg-black/60 active:scale-95 transition-all shadow-md"
+                      title="Upload / Change Photo"
+                    >
                       <Camera size={18} />
                     </button>
                   </div>
                   <div className="absolute bottom-6 left-6 right-6">
-                    <h2 className="text-[24px] font-bold text-white mb-1">{currentUserProfile.name}</h2>
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-green-500" />
-                      <p className="text-[10px] font-bold uppercase tracking-widest text-white/80">Active</p>
+                    <h2 className="text-[24px] font-bold text-white mb-1">{profileName || currentUserProfile.name}</h2>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full bg-green-500" />
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-white/80">Active</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAvatarUploadTarget('edit_profile');
+                          setIsAvatarUploadOpen(true);
+                        }}
+                        className="text-[11px] font-bold text-white underline underline-offset-4"
+                      >
+                        {t('profile.upload_avatar', 'Change Photo')}
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -3812,24 +4622,49 @@ export default function App() {
                       <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/30 mb-2 block px-1">Display Name</label>
                       <input 
                         type="text" 
-                        defaultValue={currentUserProfile.name}
-                        className="w-full h-14 px-5 bg-black/[0.02] border-none rounded-2xl text-[15px] font-bold focus:ring-0"
+                        value={profileName}
+                        onChange={(e) => setProfileName(e.target.value)}
+                        placeholder="e.g. Sipho Dlamini"
+                        className="w-full h-14 px-5 bg-black/[0.02] border border-black/5 rounded-2xl text-[15px] font-bold focus:ring-0"
                       />
                     </div>
                     <div>
-                      <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/30 mb-2 block px-1">Email Address</label>
+                      <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/30 mb-2 block px-1">Professional Title / Specialty</label>
                       <input 
-                        type="email" 
-                        defaultValue={currentUserProfile.email}
-                        className="w-full h-14 px-5 bg-black/[0.02] border-none rounded-2xl text-[15px] font-bold focus:ring-0 opacity-50 cursor-not-allowed"
-                        disabled
+                        type="text" 
+                        value={profileTitle}
+                        onChange={(e) => setProfileTitle(e.target.value)}
+                        placeholder="e.g. Electrician, Designer, Freelancer"
+                        className="w-full h-14 px-5 bg-black/[0.02] border border-black/5 rounded-2xl text-[15px] font-bold focus:ring-0"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/30 mb-2 block px-1">Phone Number</label>
+                      <input 
+                        type="tel" 
+                        value={profilePhone}
+                        onChange={(e) => setProfilePhone(e.target.value)}
+                        placeholder="+27 82 123 4567"
+                        className="w-full h-14 px-5 bg-black/[0.02] border border-black/5 rounded-2xl text-[15px] font-bold focus:ring-0"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/30 mb-2 block px-1">WhatsApp Number</label>
+                      <input 
+                        type="tel" 
+                        value={profileWhatsapp}
+                        onChange={(e) => setProfileWhatsapp(e.target.value)}
+                        placeholder="+27 82 123 4567"
+                        className="w-full h-14 px-5 bg-black/[0.02] border border-black/5 rounded-2xl text-[15px] font-bold focus:ring-0"
                       />
                     </div>
                     <div>
                       <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/30 mb-2 block px-1">Bio</label>
                       <textarea 
-                        defaultValue="Passionate creator and freelancer on TimeGiG."
-                        className="w-full p-5 bg-black/[0.02] border-none rounded-2xl text-[15px] font-bold focus:ring-0 resize-none h-32"
+                        value={profileBio}
+                        onChange={(e) => setProfileBio(e.target.value)}
+                        placeholder="Tell the community about yourself, your skills, or services..."
+                        className="w-full p-5 bg-black/[0.02] border border-black/5 rounded-2xl text-[15px] font-bold focus:ring-0 resize-none h-28"
                       />
                     </div>
                   </div>
@@ -3840,16 +4675,42 @@ export default function App() {
                       <p className="text-[9px] font-bold uppercase tracking-widest text-black/30 text-nowrap">My Rating</p>
                     </div>
                     <div className="p-4 bg-black/[0.02] rounded-3xl border border-black/[0.03]">
-                      <p className="text-[18px] font-bold text-black mb-1">0</p>
-                      <p className="text-[9px] font-bold uppercase tracking-widest text-black/30 text-nowrap">Listings</p>
+                      <p className="text-[18px] font-bold text-black mb-1">{myFriends.length}</p>
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-black/30 text-nowrap">Connections</p>
                     </div>
                   </div>
 
                   <button 
-                    onClick={() => setIsEditingProfile(false)}
-                    className="w-full h-16 bg-black text-white rounded-3xl flex items-center justify-center gap-3 font-bold uppercase tracking-widest text-[12px] active:scale-[0.98] transition-all shadow-xl shadow-black/10"
+                    onClick={async () => {
+                      if (!currentUser) return;
+                      setIsSavingProfile(true);
+                      try {
+                        const updatedData = {
+                          name: profileName.trim() || userProfile?.name || 'User',
+                          title: profileTitle.trim(),
+                          phone: profilePhone.trim(),
+                          whatsapp: profileWhatsapp.trim() || profilePhone.trim(),
+                          province: profileProvince,
+                          location: profileLocation,
+                          bio: profileBio.trim(),
+                          avatar: profileAvatar || userProfile?.avatar || currentUserProfile.avatar,
+                          profileCompleted: true,
+                          updatedAt: serverTimestamp()
+                        };
+                        await updateDoc(doc(db, 'users', currentUser.uid), updatedData);
+                        setUserProfile((prev: any) => ({ ...prev, ...updatedData }));
+                        setIsEditingProfile(false);
+                        addNotification('Profile Saved', 'Your profile details have been saved.', 'system');
+                      } catch (err: any) {
+                        alert(err.message || 'Failed to update profile');
+                      } finally {
+                        setIsSavingProfile(false);
+                      }
+                    }}
+                    disabled={isSavingProfile}
+                    className="w-full h-16 bg-black text-white rounded-3xl flex items-center justify-center gap-3 font-bold uppercase tracking-widest text-[12px] active:scale-[0.98] transition-all shadow-xl shadow-black/10 disabled:opacity-50"
                   >
-                    Save Changes
+                    {isSavingProfile ? 'Saving...' : t('profile.save_changes', 'Save Changes')}
                   </button>
                 </div>
               </div>
@@ -3875,8 +4736,25 @@ export default function App() {
             </header>
             <div className="flex-1 overflow-y-auto px-8 py-12">
               <div className="max-w-sm mx-auto">
-                <div className="w-20 h-20 bg-black rounded-[32px] flex items-center justify-center mb-10 shadow-2xl mx-auto">
-                  <h1 className="text-white text-[24px] font-black tracking-tighter">TG</h1>
+                <div 
+                  onClick={() => {
+                    setAvatarUploadTarget('edit_profile');
+                    setIsAvatarUploadOpen(true);
+                  }}
+                  className="relative w-24 h-24 rounded-[32px] overflow-hidden mb-8 shadow-2xl mx-auto border-2 border-black/10 bg-black cursor-pointer group hover:scale-105 active:scale-95 transition-all flex items-center justify-center"
+                  title="Your TimeGiG Profile Logo - Tap to customize"
+                >
+                  <img 
+                    src={currentUserProfile.avatar} 
+                    alt="TimeGiG Logo" 
+                    className="w-full h-full object-cover group-hover:opacity-85 transition-opacity" 
+                  />
+                  <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
+                    <h1 className="text-white text-[24px] font-black tracking-tighter drop-shadow-md">TG</h1>
+                  </div>
+                  <div className="absolute bottom-1 right-1 bg-white text-black p-1 rounded-xl shadow-md group-hover:scale-110 transition-transform">
+                    <Camera size={12} />
+                  </div>
                 </div>
                 <h3 className="text-[28px] font-bold text-black mb-6 tracking-tight text-center">Empowering South Africa's Hustle</h3>
                 <div className="space-y-6 text-black/60 leading-relaxed font-medium">
@@ -4180,17 +5058,48 @@ export default function App() {
               <button onClick={() => setIsSettingsOpen(false)} className="p-2 -ml-2 hover:bg-black/5 rounded-full transition-colors">
                 <ChevronLeft size={24} />
               </button>
-              <h2 className="flex-1 text-center text-[14px] font-bold tracking-[0.2em] uppercase mr-8">Settings</h2>
+              <h2 className="flex-1 text-center text-[14px] font-bold tracking-[0.2em] uppercase mr-8">{t('settings.title', 'Settings')}</h2>
             </header>
             <div className="flex-1 overflow-y-auto px-6 py-8">
-              <div className="max-w-sm mx-auto space-y-6">
+              <div className="max-w-sm mx-auto space-y-4">
                 {[
-                  { label: 'Notifications', icon: Bell, value: 'System', onClick: () => setIsSoundSelectorOpen(true) },
-                  { label: 'Chat Sounds', icon: MessageSquare, value: 'Custom', onClick: () => setIsChatSoundSelectorOpen(true) },
-                  { label: 'Privacy & Security', icon: ShieldCheck, value: '' },
-                  { label: 'Theme', icon: Palette, value: 'Light' },
-                  { label: 'Language', icon: Globe, value: 'English (ZA)' },
-                  { label: 'Account Deletion', icon: Trash2, value: '', color: 'text-red-500' },
+                  { 
+                    label: t('settings.privacy_security', 'Privacy & Security'), 
+                    icon: ShieldCheck, 
+                    value: privacySettings.profileVisibility === 'public' ? 'Public' : privacySettings.profileVisibility === 'friends' ? 'Friends' : 'Private',
+                    onClick: () => setIsPrivacyModalOpen(true) 
+                  },
+                  { 
+                    label: t('settings.theme', 'App Theme'), 
+                    icon: Palette, 
+                    value: APP_THEMES.find(th => th.id === currentTheme)?.name.split('/')[0].trim() || 'Light',
+                    onClick: () => setIsThemeModalOpen(true) 
+                  },
+                  { 
+                    label: t('settings.language', 'Language / Ulwimi'), 
+                    icon: Globe, 
+                    value: `${WORLD_LANGUAGES.find(l => l.code.toLowerCase() === currentLanguage.toLowerCase())?.flag || '🌐'} ${WORLD_LANGUAGES.find(l => l.code.toLowerCase() === currentLanguage.toLowerCase())?.name || 'English'}`,
+                    onClick: () => setIsLanguageModalOpen(true) 
+                  },
+                  { 
+                    label: t('settings.notifications', 'Notification Sound'), 
+                    icon: Bell, 
+                    value: 'System', 
+                    onClick: () => setIsSoundSelectorOpen(true) 
+                  },
+                  { 
+                    label: t('settings.chat_sounds', 'Chat Notification Sound'), 
+                    icon: MessageSquare, 
+                    value: 'Custom', 
+                    onClick: () => setIsChatSoundSelectorOpen(true) 
+                  },
+                  { 
+                    label: t('settings.account_deletion', 'Account Deletion'), 
+                    icon: Trash2, 
+                    value: '', 
+                    color: 'text-red-500',
+                    onClick: () => alert('To delete your account and associated data, please submit a request through the Help section or email support.')
+                  },
                 ].map((item, i) => (
                   <button 
                     key={i}
@@ -4206,8 +5115,8 @@ export default function App() {
                       <span className={`text-[15px] font-bold ${item.color || "text-black"}`}>{item.label}</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      {item.value && <span className="text-[12px] font-bold text-black/20">{item.value}</span>}
-                      <ChevronRight size={16} className="text-black/10" />
+                      {item.value && <span className="text-[12px] font-bold text-black/40">{item.value}</span>}
+                      <ChevronRight size={16} className="text-black/20 group-hover:text-black/60 transition-colors" />
                     </div>
                   </button>
                 ))}
@@ -4395,6 +5304,102 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Friends & Family Overlay Modal */}
+      <FriendsModal
+        isOpen={isFriendsModalOpen}
+        onClose={() => setIsFriendsModalOpen(false)}
+        activeTab={friendsModalTab}
+        setActiveTab={setFriendsModalTab}
+        currentUserId={currentUser?.uid}
+        friends={friendsList.filter(f => f.userId === currentUser?.uid)}
+        following={followingList.filter(f => f.followerId === currentUser?.uid)}
+        followers={followersList.filter(f => f.followingId === currentUser?.uid)}
+        allUsers={allUsers}
+        onViewUser={(u) => setViewingUserModal(u)}
+        onToggleFollow={handleToggleFollow}
+        onOpenRelationshipChooser={(u) => setRelationshipChooserUser(u)}
+        onRemoveFriend={handleRemoveFriend}
+        onStartChat={startChatWithUser}
+      />
+
+      {/* Relationship Chooser (Friend / Family) Dialog */}
+      <RelationshipChooserModal
+        targetUser={relationshipChooserUser}
+        currentCategory={friendsList.find(f => f.userId === currentUser?.uid && f.friendId === relationshipChooserUser?.id)?.category}
+        onClose={() => setRelationshipChooserUser(null)}
+        onSelectCategory={(category) => {
+          if (relationshipChooserUser) {
+            handleSetFriendship(relationshipChooserUser, category);
+          }
+        }}
+        onRemoveFriend={() => {
+          if (relationshipChooserUser) {
+            handleRemoveFriend(relationshipChooserUser.id);
+            setRelationshipChooserUser(null);
+          }
+        }}
+      />
+
+      {/* Public User Profile Card Modal */}
+      <UserProfileModal
+        user={viewingUserModal}
+        currentUserId={currentUser?.uid}
+        isFollowing={followingList.some(f => f.followerId === currentUser?.uid && f.followingId === viewingUserModal?.id)}
+        friendship={friendsList.find(f => f.userId === currentUser?.uid && f.friendId === viewingUserModal?.id)}
+        followersCount={followersList.filter(f => f.followingId === viewingUserModal?.id).length}
+        followingCount={followingList.filter(f => f.followerId === viewingUserModal?.id).length}
+        friendsCount={friendsList.filter(f => f.userId === viewingUserModal?.id).length}
+        userListings={listings.filter(l => l.ownerId === viewingUserModal?.id)}
+        onClose={() => setViewingUserModal(null)}
+        onToggleFollow={() => {
+          if (viewingUserModal) handleToggleFollow(viewingUserModal);
+        }}
+        onOpenRelationshipChooser={() => {
+          if (viewingUserModal) setRelationshipChooserUser(viewingUserModal);
+        }}
+        onStartChat={() => {
+          if (viewingUserModal) startChatWithUser(viewingUserModal);
+        }}
+        onViewListing={(listing) => handleViewListing(listing)}
+      />
+
+      {/* Privacy Settings Modal */}
+      <PrivacySettingsModal
+        isOpen={isPrivacyModalOpen}
+        onClose={() => setIsPrivacyModalOpen(false)}
+        currentSettings={privacySettings}
+        onSave={handleSavePrivacySettings}
+        t={t}
+      />
+
+      {/* Theme Selector Modal */}
+      <ThemeSelectorModal
+        isOpen={isThemeModalOpen}
+        onClose={() => setIsThemeModalOpen(false)}
+        currentThemeId={currentTheme}
+        onSelectTheme={handleSelectTheme}
+        t={t}
+      />
+
+      {/* Language Selector Modal */}
+      <LanguageSelectorModal
+        isOpen={isLanguageModalOpen}
+        onClose={() => setIsLanguageModalOpen(false)}
+        currentLanguageCode={currentLanguage}
+        onSelectLanguage={handleSelectLanguage}
+        t={t}
+      />
+
+      {/* Avatar Upload / Customization Modal */}
+      <AvatarUploadModal
+        isOpen={isAvatarUploadOpen}
+        onClose={() => setIsAvatarUploadOpen(false)}
+        currentAvatar={avatarUploadTarget === 'onboarding' ? (profileAvatar || currentUserProfile.avatar) : currentUserProfile.avatar}
+        userName={currentUserProfile.name}
+        onSaveAvatar={handleSaveAvatar}
+        t={t}
+      />
     </div>
   );
 }
