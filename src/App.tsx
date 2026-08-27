@@ -393,6 +393,7 @@ export default function App() {
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
   const [isChatMenuOpen, setIsChatMenuOpen] = useState(false);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const [messageToForward, setMessageToForward] = useState<Message | null>(null);
   const [viewingProfileContact, setViewingProfileContact] = useState<Conversation | null>(null);
@@ -459,8 +460,8 @@ export default function App() {
     }
   };
 
-  const sendVoiceMessage = (url: string, duration: number) => {
-    if (!activeConversationId) return;
+  const sendVoiceMessage = async (url: string, duration: number) => {
+    if (!activeConversationId || !currentUser) return;
     const newMessage: Message = {
       id: Date.now().toString(),
       sender: 'me',
@@ -471,17 +472,35 @@ export default function App() {
       duration
     };
     
-    setConversations(conversations.map(conv => 
+    setConversations(prev => prev.map(conv => 
       conv.id === activeConversationId 
         ? { 
             ...conv, 
-            messages: [...conv.messages, newMessage], 
+            messages: [...(conv.messages || []), newMessage], 
             lastMessage: '🎤 Voice note', 
             timestamp: new Date() 
           } 
         : conv
     ));
     setPendingVoiceUrl(null);
+
+    try {
+      await addDoc(collection(db, 'conversations', activeConversationId, 'messages'), {
+        senderId: currentUser.uid,
+        sender: 'me',
+        text: 'Voice note',
+        timestamp: serverTimestamp(),
+        type: 'voice',
+        audioUrl: url,
+        duration
+      });
+      await updateDoc(doc(db, 'conversations', activeConversationId), {
+        lastMessage: '🎤 Voice note',
+        timestamp: serverTimestamp()
+      });
+    } catch (err) {
+      console.error('Failed to sync voice message to firestore:', err);
+    }
   };
 
   useEffect(() => {
@@ -523,11 +542,26 @@ export default function App() {
 
     const messagesQuery = query(collection(db, 'conversations', activeConversationId, 'messages'), orderBy('timestamp', 'asc'));
     const unsubscribeMessages = onSnapshot(messagesQuery, (snapshot) => {
-      const messagesData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        timestamp: doc.data().timestamp?.toDate() || new Date()
-      })) as Message[];
+      const messagesData = snapshot.docs.map(doc => {
+        const data = doc.data();
+        let ts = new Date();
+        if (data.timestamp?.toDate) {
+          ts = data.timestamp.toDate();
+        } else if (data.timestamp?.seconds) {
+          ts = new Date(data.timestamp.seconds * 1000);
+        } else if (data.timestamp instanceof Date) {
+          ts = data.timestamp;
+        } else if (data.timestamp) {
+          ts = new Date(data.timestamp);
+        }
+
+        return {
+          id: doc.id,
+          ...data,
+          sender: data.senderId === currentUser.uid ? 'me' : (data.sender === 'me' && !data.senderId ? 'them' : (data.sender || 'them')),
+          timestamp: ts
+        };
+      }) as Message[];
       
       setConversations(prev => prev.map(conv => 
         conv.id === activeConversationId ? { ...conv, messages: messagesData } : conv
@@ -790,11 +824,17 @@ export default function App() {
     // Posts Sync
     const postsQuery = query(collection(db, 'posts'), orderBy('timestamp', 'desc'));
     const unsubscribePosts = onSnapshot(postsQuery, (snapshot) => {
-      const postsData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        timestamp: doc.data().timestamp?.toDate() || new Date()
-      })) as Post[];
+      const postsData = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          ...data,
+          comments: data.comments || [],
+          likes: data.likes || 0,
+          media: data.media || [],
+          timestamp: data.timestamp?.toDate() || new Date()
+        }
+      }) as Post[];
       setPosts(postsData);
     }, (err) => {
       console.warn('Posts sync error:', err);
@@ -803,11 +843,16 @@ export default function App() {
     // Listings Sync
     const listingsQuery = query(collection(db, 'listings'), orderBy('timestamp', 'desc'));
     const unsubscribeListings = onSnapshot(listingsQuery, (snapshot) => {
-      const listingsData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        timestamp: doc.data().timestamp?.toDate() || new Date()
-      })) as Listing[];
+      const listingsData = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          ...data,
+          media: data.media || [],
+          likes: data.likes || 0,
+          timestamp: data.timestamp?.toDate() || new Date()
+        }
+      }) as Listing[];
       setListings(listingsData);
     }, (err) => {
       console.warn('Listings sync error:', err);
@@ -828,13 +873,21 @@ export default function App() {
           ...data,
           participantName: details.name || 'Anonymous',
           participantAvatar: details.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100',
-          timestamp: data.timestamp?.toDate() || new Date(),
-          messages: [] // Messages fetched in separate effect
+          timestamp: data.timestamp?.toDate ? data.timestamp.toDate() : (data.timestamp ? new Date(data.timestamp) : new Date()),
+          messages: [] // Messages fetched in separate effect and preserved below
         };
       }) as Conversation[];
       // In-memory sort by timestamp descending
       convData.sort((a, b) => (b.timestamp?.getTime?.() || 0) - (a.timestamp?.getTime?.() || 0));
-      setConversations(convData);
+      setConversations(prev => {
+        return convData.map(newConv => {
+          const existing = prev.find(p => p.id === newConv.id);
+          return {
+            ...newConv,
+            messages: existing?.messages && existing.messages.length > 0 ? existing.messages : []
+          };
+        });
+      });
     }, (err) => {
       console.warn('Conversations sync error:', err);
     });
@@ -1367,19 +1420,31 @@ export default function App() {
   const handleSendMessage = async () => {
     if (!chatMessage.trim() || !activeConversationId || !currentUser) return;
     
-    const messageData = {
-      senderId: currentUser.uid,
-      sender: 'me',
-      text: chatMessage,
-      timestamp: serverTimestamp(),
-      type: 'text'
-    };
+    if (editingMessageId) {
+      await updateDoc(doc(db, 'conversations', activeConversationId, 'messages', editingMessageId), {
+        text: chatMessage,
+        isEdited: true
+      });
+      await updateDoc(doc(db, 'conversations', activeConversationId), {
+        lastMessage: chatMessage,
+        timestamp: serverTimestamp()
+      });
+      setEditingMessageId(null);
+    } else {
+      const messageData = {
+        senderId: currentUser.uid,
+        sender: 'me',
+        text: chatMessage,
+        timestamp: serverTimestamp(),
+        type: 'text'
+      };
 
-    await addDoc(collection(db, 'conversations', activeConversationId, 'messages'), messageData);
-    await updateDoc(doc(db, 'conversations', activeConversationId), {
-      lastMessage: chatMessage,
-      timestamp: serverTimestamp()
-    });
+      await addDoc(collection(db, 'conversations', activeConversationId, 'messages'), messageData);
+      await updateDoc(doc(db, 'conversations', activeConversationId), {
+        lastMessage: chatMessage,
+        timestamp: serverTimestamp()
+      });
+    }
 
     addNotification("Message Sent", chatMessage, 'chat');
     setChatMessage('');
@@ -2271,12 +2336,6 @@ export default function App() {
                 <SquarePen size={22} strokeWidth={2.5} />
               </button>
             )}
-            <img 
-              src={currentUserProfile.avatar} 
-              alt="Profile" 
-              className="w-8 h-8 rounded-full object-cover border border-black/5 cursor-pointer hover:ring-2 hover:ring-black/10 transition-all active:scale-95 shadow-xs" 
-              onClick={() => setIsProfileMenuOpen(true)}
-            />
           </div>
         </div>
       </header>
@@ -3137,6 +3196,7 @@ export default function App() {
                               msg.sender === 'me' ? 'text-white/60' : 'text-black/40'
                             }`}>
                               {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              {(msg as any).isEdited && ' (edited)'}
                             </div>
                           </div>
 
@@ -3149,7 +3209,12 @@ export default function App() {
                                 className={`flex gap-4 mt-2 px-2 ${msg.sender === 'me' ? 'flex-row-reverse' : 'flex-row'}`}
                               >
                                 <button 
-                                  onClick={(e) => { e.stopPropagation(); setChatMessage(msg.text); deleteMessage(msg.id); }}
+                                  onClick={(e) => { 
+                                    e.stopPropagation(); 
+                                    setChatMessage(msg.text); 
+                                    setEditingMessageId(msg.id);
+                                    setSelectedMessageId(null);
+                                  }}
                                   className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest text-black/40 hover:text-black transition-colors"
                                 >
                                   <Edit3 size={12} />
@@ -3264,10 +3329,27 @@ export default function App() {
                               onChange={(e) => setChatMessage(e.target.value)}
                               onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
                               disabled={conversations.find(c => c.id === activeConversationId)?.isBlocked}
-                              placeholder={conversations.find(c => c.id === activeConversationId)?.isBlocked ? 'Contact is blocked' : 'Type a message...'}
+                              placeholder={
+                                conversations.find(c => c.id === activeConversationId)?.isBlocked 
+                                  ? 'Contact is blocked' 
+                                  : editingMessageId 
+                                    ? 'Editing message...' 
+                                    : 'Type a message...'
+                              }
                               className="w-full h-12 bg-black/[0.04] rounded-2xl pl-12 pr-24 font-medium text-[14px] outline-none focus:ring-0 disabled:opacity-50"
                             />
                             <div className="absolute right-1 top-1 flex items-center gap-1">
+                              {editingMessageId && (
+                                <button
+                                  onClick={() => {
+                                    setEditingMessageId(null);
+                                    setChatMessage('');
+                                  }}
+                                  className="w-8 h-8 text-black/40 hover:text-black rounded-xl flex items-center justify-center transition-colors"
+                                >
+                                  <X size={16} />
+                                </button>
+                              )}
                               <button 
                                 onClick={startVoiceRecording}
                                 disabled={conversations.find(c => c.id === activeConversationId)?.isBlocked}
