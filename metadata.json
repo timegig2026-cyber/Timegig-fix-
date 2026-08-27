@@ -1,0 +1,6 @@
+{
+  "name": "TimeGiG",
+  "description": "A clean application with a white background and a minimalist bottom navigation bar featuring Home, GiGs, Seekers, Chat, and Market.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

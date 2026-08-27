@@ -1,0 +1,111 @@
+{
+  "collections": {
+    "users": {
+      "description": "App users and their profiles",
+      "documents": {
+        "${uid}": {
+          "name": "string",
+          "email": "string",
+          "avatar": "string",
+          "title": "string",
+          "phone": "string",
+          "province": "string",
+          "city": "string",
+          "bio": "string",
+          "profileCompleted": "boolean",
+          "createdAt": "timestamp",
+          "updatedAt": "timestamp"
+        }
+      }
+    },
+    "posts": {
+      "description": "Social feed posts",
+      "documents": {
+        "${postId}": {
+          "text": "string",
+          "timestamp": "timestamp",
+          "fontFamily": "string",
+          "color": "string",
+          "media": "array",
+          "likes": "number",
+          "authorId": "string",
+          "authorName": "string",
+          "authorAvatar": "string"
+        }
+      },
+      "collections": {
+        "comments": {
+          "documents": {
+            "${commentId}": {
+              "text": "string",
+              "userId": "string",
+              "userName": "string",
+              "timestamp": "timestamp"
+            }
+          }
+        }
+      }
+    },
+    "listings": {
+      "description": "Marketplace, GiGs, and Seekers listings",
+      "documents": {
+        "${listingId}": {
+          "tab": "string",
+          "title": "string",
+          "info": "string",
+          "experience": "string",
+          "time": "string",
+          "date": "string",
+          "province": "string",
+          "location": "string",
+          "price": "string",
+          "media": "array",
+          "timestamp": "timestamp",
+          "contact": "object",
+          "likes": "number",
+          "views": "number",
+          "interested": "number",
+          "ownerEmail": "string",
+          "ownerId": "string"
+        }
+      },
+      "collections": {
+        "comments": {
+          "documents": {
+            "${commentId}": {
+              "text": "string",
+              "userId": "string",
+              "userName": "string",
+              "timestamp": "timestamp"
+            }
+          }
+        }
+      }
+    },
+    "conversations": {
+      "description": "Chat conversations between users",
+      "documents": {
+        "${conversationId}": {
+          "participants": "array",
+          "lastMessage": "string",
+          "timestamp": "timestamp",
+          "participantDetails": "object"
+        }
+      },
+      "collections": {
+        "messages": {
+          "documents": {
+            "${messageId}": {
+              "senderId": "string",
+              "text": "string",
+              "timestamp": "timestamp",
+              "type": "string",
+              "audioUrl": "string",
+              "duration": "number"
+            }
+          }
+        }
+      }
+    }
+  }
+}

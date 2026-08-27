@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+@keyframes dance {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  25% { transform: translateY(-5px) rotate(-5deg); }
+  75% { transform: translateY(-5px) rotate(5deg); }
+}
+
+.dancing-emoji {
+  display: inline-block;
+  animation: dance 1s infinite ease-in-out;
+}
